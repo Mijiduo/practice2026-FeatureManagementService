@@ -4,18 +4,75 @@ An enterprise-grade, high-throughput, and low-latency feature flagging platform 
 
 ---
 
-## 1. Core Business Functions
+## 1. Core Architecture & Components
 
-The platform enforces a strict separation of concerns between the **Management/Distribution Tier (Server)** and the **Execution Tier (Client/SDKs)** to guarantee sub-millisecond evaluation times without bloating infrastructure costs.
+The system is built on a decoupled architecture comprising the Server Infrastructure, Client SDKs, and a foundational Shared Engine that guarantees identical behavior across all environments.
 
-### Server & Infrastructure (Control Plane & Relay)
-* **Configuration Management:** Provides an administrative interface and backend APIs to create, update, and archive feature flags, target segments, and percentage rollouts.
-* **Real-time Configuration Streaming:** The **Relay Service** maintains persistent Server-Sent Events (SSE) connections with backend services to broadcast incremental rule updates (diffs) instantly when configurations change.
-* **Edge Resolution:** The **Edge API** handles evaluations for thin clients (Web & Mobile) by receiving user contexts, executing rules against a fast Redis cache, and returning sanitized, pre-evaluated flag states.
+### A. Shared Component: Universal Evaluation Engine
+The mathematical core embedded inside all evaluation layers (Backend SDKs and Edge Servers). 
+* **Deterministic Rollouts:** Utilizes `MurmurHash3(flagKey + userKey)` to guarantee that a specific user receives the exact same flag variant, regardless of where the code executes.
+* **Unified Rule Parser:** Processes targeting segments and multi-attribute conditions uniformly, completely eliminating "flag drift" (inconsistencies) across different programming languages.
 
-### Client & Execution (SDKs)
-* **Server-Side SDKs (Java, Go, Node.js):** Embedded directly inside backend microservices. They maintain a full copy of the environment rules in local memory and evaluate flags **locally** using a deterministic hashing engine. This completely eliminates network hops during business transactions.
-* **Client-Side SDKs (JS, iOS, Android):** Tailored for untrusted frontend environments. Instead of fetching raw business rules, they request a map of pre-evaluated flag values from the Edge API and cache them locally.
+### B. Server Infrastructure (Management & Distribution)
+The centralized backend responsible for configuration, storage, and real-time delivery.
+* **Management API (Control Plane):** The source of truth. Provides REST APIs and a UI for flag CRUD operations, targeting configurations, audit logging, and RBAC.
+* **Relay Service:** Maintains persistent Server-Sent Events (SSE) connections to broadcast incremental rule diffs to internal microservices instantly.
+* **Edge API:** An internet-facing gateway that performs on-the-fly evaluations for untrusted clients, returning sanitized state payloads to protect sensitive business logic.
+
+### C. Client SDKs (Execution Plane)
+The lightweight integration libraries running inside business applications.
+* **Server-Side SDKs (Java, Go, Node.js):** Designed for trusted backend environments. They synchronize the full rule set into local memory and evaluate flags locally via the Shared Engine. **Result: Zero network latency.**
+### Typical SDK Usage (Pseudocode)
+
+To ensure a seamless developer experience, all SDKs follow a consistent 3-step initialization and evaluation pattern. 
+
+#### Server-Side SDK (Backend / Microservices)
+Designed for synchronous, zero-latency local evaluation.
+
+```java
+// Step 1: Initialize the SDK as a singleton on application startup
+FeatureClient client = new FeatureClient("SERVER_SDK_KEY");
+
+// Step 2: Build the context for the current request/user
+Context userContext = new Context.Builder("user-94812")
+    .setAttribute("region", "US-East")
+    .setAttribute("tier", "premium")
+    .build();
+
+// Step 3: Evaluate the flag locally (Zero network I/O)
+// Signature: getBoolVariation(flagKey, context, fallbackValue)
+boolean enableNewCheckout = client.getBoolVariation("new-checkout-flow", userContext, false);
+
+if (enableNewCheckout) {
+    // Route to the new highly-optimized database checkout logic
+    checkoutService.processV2(order);
+} else {
+    // Route to the legacy monolithic checkout logic
+    checkoutService.processLegacy(order);
+}
+
+* **Client-Side SDKs (Web, iOS, Android):** Designed for untrusted frontend environments. Instead of downloading raw rules, they utilize **Edge Resolution**—fetching pre-computed flag values from the Edge API and serving them from a local device cache. **Result: High security and low bandwidth.**
+
+### Typical SDK Usage (Pseudocode)
+
+```JavaScript
+// Step 1: Initialize the SDK with an environment key
+const client = new FeatureClient("CLIENT_PUBLIC_KEY");
+
+// Step 2: Identify the user asynchronously (e.g., after login)
+// This calls the Edge API to fetch pre-evaluated flag states
+await client.identify({
+    userId: "user-94812",
+    platform: "web",
+    appVersion: "2.1.0"
+});
+
+// Step 3: Evaluate synchronously against the local device cache
+const showDiscountBanner = client.getBoolean("summer-sale-banner", false);
+
+if (showDiscountBanner) {
+    render(<DiscountBanner />);
+}
 
 ---
 
